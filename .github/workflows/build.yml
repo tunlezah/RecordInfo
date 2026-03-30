@@ -8,7 +8,18 @@ on:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            destination: "platform=macOS,arch=arm64"
+            artifact_name: RecordInfo-macOS-ARM
+          - arch: x86_64
+            destination: "platform=macOS,arch=x86_64"
+            artifact_name: RecordInfo-macOS-Intel
+
     runs-on: macos-15
+    name: Build (${{ matrix.arch }})
 
     steps:
     - name: Checkout
@@ -17,17 +28,78 @@ jobs:
     - name: Select Xcode
       run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
 
+    - name: Cache Homebrew
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/Library/Caches/Homebrew
+          /opt/homebrew/Cellar/chromaprint
+          /usr/local/Cellar/chromaprint
+        key: homebrew-chromaprint-${{ runner.arch }}-v1
+
     - name: Install Dependencies
       run: brew install chromaprint
 
-    - name: Build
+    - name: Generate App Icons
+      run: |
+        chmod +x scripts/generate-icons.sh
+        ./scripts/generate-icons.sh "Vibrant vinyl ear logo design.png"
+
+    - name: Verify Icons
+      run: |
+        echo "Generated icon files:"
+        ls -la RecordInfo/Assets.xcassets/AppIcon.appiconset/icon_*.png
+        # Verify the 1024px icon exists (largest, used as source for .icns)
+        file RecordInfo/Assets.xcassets/AppIcon.appiconset/icon_1024.png
+
+    - name: Build Release
       run: |
         xcodebuild -project RecordInfo.xcodeproj \
           -scheme RecordInfo \
-          -destination 'platform=macOS' \
+          -configuration Release \
+          -destination '${{ matrix.destination }}' \
+          -derivedDataPath build \
+          ONLY_ACTIVE_ARCH=NO \
+          CODE_SIGN_IDENTITY="-" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
           build
 
+    - name: Package Artifact
+      run: |
+        APP_PATH=$(find build/Build/Products/Release -name "RecordInfo.app" -type d | head -1)
+        if [ -z "$APP_PATH" ]; then
+          echo "Error: RecordInfo.app not found in build output"
+          find build -name "*.app" -type d
+          exit 1
+        fi
+        echo "Found app at: $APP_PATH"
+
+        # Verify the app icon is embedded
+        ICNS_PATH="$APP_PATH/Contents/Resources/AppIcon.icns"
+        if [ -f "$ICNS_PATH" ]; then
+          echo "App icon embedded successfully: $(file "$ICNS_PATH")"
+        else
+          echo "Warning: AppIcon.icns not found at expected path, checking alternatives..."
+          find "$APP_PATH/Contents/Resources" -name "*.icns" -o -name "*.png" 2>/dev/null || true
+        fi
+
+        # Create a zip for the artifact
+        ARTIFACT_DIR="artifact"
+        mkdir -p "$ARTIFACT_DIR"
+        ditto -c -k --keepParent "$APP_PATH" "$ARTIFACT_DIR/RecordInfo.app.zip"
+        echo "Artifact created: $ARTIFACT_DIR/RecordInfo.app.zip"
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: artifact/RecordInfo.app.zip
+        retention-days: 14
+        if-no-files-found: error
+
     - name: SwiftLint
+      if: matrix.arch == 'arm64'
       continue-on-error: true
       run: |
         brew install swiftlint
