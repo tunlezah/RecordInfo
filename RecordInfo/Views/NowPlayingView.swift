@@ -134,7 +134,7 @@ struct NowPlayingView: View {
         .frame(width: 800, height: 600)
 }
 
-private func makePreviewStateManager() -> UIStateManager {
+@MainActor private func makePreviewStateManager() -> UIStateManager {
     UIStateManager(
         audioService: PreviewAudioServiceNP(),
         fingerprintService: PreviewFingerprintServiceNP(),
@@ -143,7 +143,8 @@ private func makePreviewStateManager() -> UIStateManager {
     )
 }
 
-private final class PreviewAudioServiceNP: AudioServiceProtocol, @unchecked Sendable {
+@MainActor
+private final class PreviewAudioServiceNP: AudioServiceProtocol {
     func start() async throws {}
     func stop() {}
     func getBufferData() -> Data { Data() }
@@ -151,14 +152,17 @@ private final class PreviewAudioServiceNP: AudioServiceProtocol, @unchecked Send
     var bufferFillPercentage: Double { 0.0 }
     var isRunning: Bool { false }
 }
-private struct PreviewFingerprintServiceNP: FingerprintServiceProtocol {
+@MainActor
+private final class PreviewFingerprintServiceNP: FingerprintServiceProtocol {
     func generateFingerprint(from audioData: Data, sampleRate: Int, duration: Double) async throws -> String { "" }
     func hashFingerprint(_ fingerprint: String) -> String { "" }
 }
-private struct PreviewRecognitionServiceNP: RecognitionServiceProtocol {
+@MainActor
+private final class PreviewRecognitionServiceNP: RecognitionServiceProtocol {
     func identifyCurrentAudio() async throws -> IdentificationResult? { nil }
 }
-private struct PreviewCooldownManagerNP: CooldownManagerProtocol {
+@MainActor
+private final class PreviewCooldownManagerNP: CooldownManagerProtocol {
     func shouldSkip(fingerprintHash: String, trackKey: String) -> Bool { false }
     func registerDetection(fingerprintHash: String, trackKey: String) {}
     func isInGlobalCooldown() -> Bool { false }

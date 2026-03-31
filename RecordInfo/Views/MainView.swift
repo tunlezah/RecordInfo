@@ -236,7 +236,8 @@ struct MainView: View {
 
 // MARK: - Preview Helpers
 
-private final class PreviewAudioService: AudioServiceProtocol, @unchecked Sendable {
+@MainActor
+private final class PreviewAudioService: AudioServiceProtocol {
     func start() async throws {}
     func stop() {}
     func getBufferData() -> Data { Data() }
@@ -245,16 +246,19 @@ private final class PreviewAudioService: AudioServiceProtocol, @unchecked Sendab
     var isRunning: Bool { false }
 }
 
-private struct PreviewFingerprintService: FingerprintServiceProtocol {
+@MainActor
+private final class PreviewFingerprintService: FingerprintServiceProtocol {
     func generateFingerprint(from audioData: Data, sampleRate: Int, duration: Double) async throws -> String { "" }
     func hashFingerprint(_ fingerprint: String) -> String { "" }
 }
 
-private struct PreviewRecognitionService: RecognitionServiceProtocol {
+@MainActor
+private final class PreviewRecognitionService: RecognitionServiceProtocol {
     func identifyCurrentAudio() async throws -> IdentificationResult? { nil }
 }
 
-private struct PreviewCooldownManager: CooldownManagerProtocol {
+@MainActor
+private final class PreviewCooldownManager: CooldownManagerProtocol {
     func shouldSkip(fingerprintHash: String, trackKey: String) -> Bool { false }
     func registerDetection(fingerprintHash: String, trackKey: String) {}
     func isInGlobalCooldown() -> Bool { false }

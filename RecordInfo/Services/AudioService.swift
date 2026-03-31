@@ -1,6 +1,71 @@
 import AVFoundation
 import Foundation
 
+// Thread-safe audio buffer storage, used from the audio tap callback thread
+final class AudioBufferStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var circularBuffer: [Float] = []
+    private var writeIndex: Int = 0
+    private var filled: Bool = false
+    private let capacity: Int
+
+    let noiseGateThreshold: Float
+    let normalizationTarget: Float
+
+    init(capacity: Int, noiseGateThreshold: Float, normalizationTarget: Float) {
+        self.capacity = capacity
+        self.noiseGateThreshold = noiseGateThreshold
+        self.normalizationTarget = normalizationTarget
+        self.circularBuffer = [Float](repeating: 0, count: capacity)
+    }
+
+    func write(_ samples: [Float]) {
+        lock.lock()
+        defer { lock.unlock() }
+        for sample in samples {
+            circularBuffer[writeIndex] = sample
+            writeIndex += 1
+            if writeIndex >= capacity {
+                writeIndex = 0
+                filled = true
+            }
+        }
+    }
+
+    func readAll() -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        if filled {
+            let part1 = Array(circularBuffer[writeIndex...])
+            let part2 = Array(circularBuffer[..<writeIndex])
+            return part1 + part2
+        } else {
+            return Array(circularBuffer[..<writeIndex])
+        }
+    }
+
+    var fillPercentage: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        guard capacity > 0 else { return 0 }
+        if filled { return 1.0 }
+        return Double(writeIndex) / Double(capacity)
+    }
+
+    func applyNoiseGate(_ samples: [Float]) -> [Float] {
+        let threshold = noiseGateThreshold
+        return samples.map { abs($0) < threshold ? 0 : $0 }
+    }
+
+    func normalizeSamples(_ samples: [Float]) -> [Float] {
+        guard !samples.isEmpty else { return [] }
+        let peak = samples.map { abs($0) }.max() ?? 0
+        guard peak > 0 else { return samples }
+        let scale = normalizationTarget / peak
+        return samples.map { $0 * scale }
+    }
+}
+
 @Observable
 @MainActor
 final class AudioService: AudioServiceProtocol {
@@ -14,11 +79,7 @@ final class AudioService: AudioServiceProtocol {
     var isRunning: Bool { isListening }
 
     var bufferFillPercentage: Double {
-        bufferLock.lock()
-        defer { bufferLock.unlock() }
-        guard maxBufferSamples > 0 else { return 0 }
-        if bufferFilled { return 1.0 }
-        return Double(bufferWriteIndex) / Double(maxBufferSamples)
+        bufferStorage?.fillPercentage ?? 0
     }
 
     // MARK: - Configuration
@@ -31,13 +92,10 @@ final class AudioService: AudioServiceProtocol {
     // MARK: - Private State
 
     private var audioEngine: AVAudioEngine?
-    private let bufferLock = NSLock()
-    private var circularBuffer: [Float] = []
-    private var bufferWriteIndex: Int = 0
-    private var bufferFilled: Bool = false
+    private var bufferStorage: AudioBufferStorage?
 
     private var gapSilenceDuration: Double = 0.0
-    private let gapSilenceThreshold: Double = 2.0 // seconds of silence to detect gap
+    private let gapSilenceThreshold: Double = 2.0
     private let gapAmplitudeThreshold: Float = 0.02
 
     private var maxBufferSamples: Int {
@@ -69,12 +127,37 @@ final class AudioService: AudioServiceProtocol {
             throw AudioServiceError.converterCreationFailed
         }
 
-        resetBuffer()
+        let storage = AudioBufferStorage(
+            capacity: maxBufferSamples,
+            noiseGateThreshold: noiseGateThreshold,
+            normalizationTarget: normalizationTarget
+        )
+        bufferStorage = storage
+        let gapThreshold = gapAmplitudeThreshold
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) {
             [weak self] buffer, _ in
-            guard let self else { return }
-            self.processInputBuffer(buffer, converter: converter, outputFormat: outputFormat)
+            let (rms, isQuiet, frameDuration) = AudioService.processBuffer(
+                buffer, converter: converter, outputFormat: outputFormat,
+                storage: storage, gapThreshold: gapThreshold
+            )
+
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.currentLevel = rms
+
+                if isQuiet {
+                    self.gapSilenceDuration += frameDuration
+                    if self.gapSilenceDuration >= self.gapSilenceThreshold {
+                        self.gapDetected = true
+                    }
+                } else {
+                    if self.gapDetected {
+                        self.gapDetected = false
+                    }
+                    self.gapSilenceDuration = 0.0
+                }
+            }
         }
 
         engine.prepare()
@@ -90,55 +173,38 @@ final class AudioService: AudioServiceProtocol {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
+        bufferStorage = nil
         isListening = false
         currentLevel = 0.0
     }
 
     func getBufferData() -> Data {
-        bufferLock.lock()
-        defer { bufferLock.unlock() }
-
-        let samples: [Float]
-        if bufferFilled {
-            // Read from writeIndex to end, then from 0 to writeIndex
-            let part1 = Array(circularBuffer[bufferWriteIndex...])
-            let part2 = Array(circularBuffer[..<bufferWriteIndex])
-            samples = part1 + part2
-        } else {
-            samples = Array(circularBuffer[..<bufferWriteIndex])
-        }
-
-        let normalized = normalizeSamples(samples)
-        return convertToPCM16Data(normalized)
+        guard let storage = bufferStorage else { return Data() }
+        let samples = storage.readAll()
+        let normalized = storage.normalizeSamples(samples)
+        return AudioService.convertToPCM16Data(normalized)
     }
 
     func getCurrentLevel() -> Float {
         return currentLevel
     }
 
-    // MARK: - Private Methods
+    // MARK: - Static Helpers (nonisolated, no actor state)
 
-    private func resetBuffer() {
-        bufferLock.lock()
-        defer { bufferLock.unlock() }
-
-        circularBuffer = [Float](repeating: 0, count: maxBufferSamples)
-        bufferWriteIndex = 0
-        bufferFilled = false
-    }
-
-    private nonisolated func processInputBuffer(
+    private static func processBuffer(
         _ buffer: AVAudioPCMBuffer,
         converter: AVAudioConverter,
-        outputFormat: AVAudioFormat
-    ) {
+        outputFormat: AVAudioFormat,
+        storage: AudioBufferStorage,
+        gapThreshold: Float
+    ) -> (rms: Float, isQuiet: Bool, frameDuration: Double) {
         let frameCount = AVAudioFrameCount(
             Double(buffer.frameLength) * outputFormat.sampleRate / buffer.format.sampleRate
         )
-        guard frameCount > 0 else { return }
+        guard frameCount > 0 else { return (0, true, 0) }
 
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCount) else {
-            return
+            return (0, true, 0)
         }
 
         var error: NSError?
@@ -153,9 +219,11 @@ final class AudioService: AudioServiceProtocol {
             return buffer
         }
 
-        if error != nil { return }
+        if error != nil { return (0, true, 0) }
 
-        guard let channelData = convertedBuffer.floatChannelData?[0] else { return }
+        guard let channelData = convertedBuffer.floatChannelData?[0] else {
+            return (0, true, 0)
+        }
         let count = Int(convertedBuffer.frameLength)
 
         var samples = [Float](repeating: 0, count: count)
@@ -163,75 +231,26 @@ final class AudioService: AudioServiceProtocol {
             samples[i] = channelData[i]
         }
 
-        // Calculate RMS level
         let rms = calculateRMS(samples)
+        let gated = storage.applyNoiseGate(samples)
+        storage.write(gated)
 
-        // Noise gate
-        let gated = applyNoiseGate(samples)
-
-        // Write to circular buffer
-        writeToBuffer(gated)
-
-        // Detect gaps
-        let isQuiet = rms < gapAmplitudeThreshold
+        let isQuiet = rms < gapThreshold
         let frameDuration = Double(count) / outputFormat.sampleRate
 
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.currentLevel = rms
-
-            if isQuiet {
-                self.gapSilenceDuration += frameDuration
-                if self.gapSilenceDuration >= self.gapSilenceThreshold {
-                    self.gapDetected = true
-                }
-            } else {
-                if self.gapDetected {
-                    // Silence ended after a detected gap - potential track transition
-                    self.gapDetected = false
-                }
-                self.gapSilenceDuration = 0.0
-            }
-        }
+        return (rms, isQuiet, frameDuration)
     }
 
-    private nonisolated func calculateRMS(_ samples: [Float]) -> Float {
+    private static func calculateRMS(_ samples: [Float]) -> Float {
         guard !samples.isEmpty else { return 0 }
         let sumOfSquares = samples.reduce(Float(0)) { $0 + $1 * $1 }
         return sqrt(sumOfSquares / Float(samples.count))
     }
 
-    private nonisolated func applyNoiseGate(_ samples: [Float]) -> [Float] {
-        return samples.map { abs($0) < noiseGateThreshold ? 0 : $0 }
-    }
-
-    private nonisolated func normalizeSamples(_ samples: [Float]) -> [Float] {
-        guard !samples.isEmpty else { return [] }
-        let peak = samples.map { abs($0) }.max() ?? 0
-        guard peak > 0 else { return samples }
-        let scale = normalizationTarget / peak
-        return samples.map { $0 * scale }
-    }
-
-    private nonisolated func writeToBuffer(_ samples: [Float]) {
-        bufferLock.lock()
-        defer { bufferLock.unlock() }
-
-        let max = circularBuffer.count
-        for sample in samples {
-            circularBuffer[bufferWriteIndex] = sample
-            bufferWriteIndex += 1
-            if bufferWriteIndex >= max {
-                bufferWriteIndex = 0
-                bufferFilled = true
-            }
-        }
-    }
-
-    private nonisolated func convertToPCM16Data(_ samples: [Float]) -> Data {
+    private static func convertToPCM16Data(_ samples: [Float]) -> Data {
         var data = Data(capacity: samples.count * 2)
         for sample in samples {
-            let clamped = max(-1.0, min(1.0, sample))
+            let clamped = Swift.max(-1.0, Swift.min(1.0, sample))
             var int16 = Int16(clamped * Float(Int16.max))
             withUnsafeBytes(of: &int16) { data.append(contentsOf: $0) }
         }

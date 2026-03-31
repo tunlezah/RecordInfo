@@ -150,7 +150,7 @@ struct DebugView: View {
         .background(Color(hex: 0x1A1A2E))
 }
 
-private func makePreviewStateManagerDebug() -> UIStateManager {
+@MainActor private func makePreviewStateManagerDebug() -> UIStateManager {
     UIStateManager(
         audioService: PreviewAudioServiceDbg(),
         fingerprintService: PreviewFingerprintServiceDbg(),
@@ -159,7 +159,8 @@ private func makePreviewStateManagerDebug() -> UIStateManager {
     )
 }
 
-private final class PreviewAudioServiceDbg: AudioServiceProtocol, @unchecked Sendable {
+@MainActor
+private final class PreviewAudioServiceDbg: AudioServiceProtocol {
     func start() async throws {}
     func stop() {}
     func getBufferData() -> Data { Data() }
@@ -167,14 +168,17 @@ private final class PreviewAudioServiceDbg: AudioServiceProtocol, @unchecked Sen
     var bufferFillPercentage: Double { 0.65 }
     var isRunning: Bool { false }
 }
-private struct PreviewFingerprintServiceDbg: FingerprintServiceProtocol {
+@MainActor
+private final class PreviewFingerprintServiceDbg: FingerprintServiceProtocol {
     func generateFingerprint(from audioData: Data, sampleRate: Int, duration: Double) async throws -> String { "" }
     func hashFingerprint(_ fingerprint: String) -> String { "" }
 }
-private struct PreviewRecognitionServiceDbg: RecognitionServiceProtocol {
+@MainActor
+private final class PreviewRecognitionServiceDbg: RecognitionServiceProtocol {
     func identifyCurrentAudio() async throws -> IdentificationResult? { nil }
 }
-private struct PreviewCooldownManagerDbg: CooldownManagerProtocol {
+@MainActor
+private final class PreviewCooldownManagerDbg: CooldownManagerProtocol {
     func shouldSkip(fingerprintHash: String, trackKey: String) -> Bool { false }
     func registerDetection(fingerprintHash: String, trackKey: String) {}
     func isInGlobalCooldown() -> Bool { false }
