@@ -87,8 +87,8 @@ struct MainView: View {
             }
         }
         .frame(
-            width: Constants.UI.mainWindowWidth,
-            height: Constants.UI.mainWindowHeight
+            width: Constants.UserInterface.mainWindowWidth,
+            height: Constants.UserInterface.mainWindowHeight
         )
         .animation(.easeInOut(duration: 0.3), value: settings.debugModeEnabled)
         .sheet(isPresented: $showSettings) {

@@ -62,8 +62,8 @@ struct RecordInfoApp: App {
         }
         .windowResizability(.contentSize)
         .defaultSize(
-            width: Constants.UI.mainWindowWidth,
-            height: Constants.UI.mainWindowHeight
+            width: Constants.UserInterface.mainWindowWidth,
+            height: Constants.UserInterface.mainWindowHeight
         )
     }
 }

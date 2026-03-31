@@ -50,19 +50,19 @@ final class FingerprintService: FingerprintServiceProtocol {
 
     /// Compares two fingerprint strings and returns a similarity score between 0.0 and 1.0.
     /// Uses character-level comparison as an approximation of true acoustic similarity.
-    func compareFingerprints(_ a: String, _ b: String) -> Double {
-        guard !a.isEmpty, !b.isEmpty else { return 0.0 }
+    func compareFingerprints(_ lhs: String, _ rhs: String) -> Double {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return 0.0 }
 
-        let charsA = Array(a)
-        let charsB = Array(b)
-        let minLength = min(charsA.count, charsB.count)
-        let maxLength = max(charsA.count, charsB.count)
+        let charsLhs = Array(lhs)
+        let charsRhs = Array(rhs)
+        let minLength = min(charsLhs.count, charsRhs.count)
+        let maxLength = max(charsLhs.count, charsRhs.count)
 
         guard maxLength > 0 else { return 0.0 }
 
         var matches = 0
-        for i in 0..<minLength {
-            if charsA[i] == charsB[i] {
+        for idx in 0..<minLength {
+            if charsLhs[idx] == charsRhs[idx] {
                 matches += 1
             }
         }

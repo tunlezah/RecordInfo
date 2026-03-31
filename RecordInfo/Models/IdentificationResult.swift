@@ -12,7 +12,18 @@ struct IdentificationResult: Identifiable, Codable, Equatable {
     let timestamp: Date
     let provider: String
 
-    init(id: UUID = UUID(), trackTitle: String, artist: String, album: String, releaseYear: String? = nil, artworkURL: URL? = nil, confidence: Double, fingerprint: String, timestamp: Date = Date(), provider: String) {
+    init(
+        id: UUID = UUID(),
+        trackTitle: String,
+        artist: String,
+        album: String,
+        releaseYear: String? = nil,
+        artworkURL: URL? = nil,
+        confidence: Double,
+        fingerprint: String,
+        timestamp: Date = Date(),
+        provider: String
+    ) {
         self.id = id
         self.trackTitle = trackTitle
         self.artist = artist

@@ -5,7 +5,7 @@ enum LogCategory: String {
     case audio = "Audio"
     case fingerprint = "Fingerprint"
     case recognition = "Recognition"
-    case ui = "UI"
+    case userInterface = "UI"
     case network = "Network"
     case general = "General"
 }

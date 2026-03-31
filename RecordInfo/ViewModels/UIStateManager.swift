@@ -2,39 +2,6 @@ import Foundation
 import SwiftUI
 import AppKit
 
-// MARK: - Service Protocols
-
-@MainActor
-protocol AudioServiceProtocol: AnyObject, Sendable {
-    func start() async throws
-    func stop()
-    func getBufferData() -> Data
-    var currentLevel: Float { get }
-    var bufferFillPercentage: Double { get }
-    var isRunning: Bool { get }
-}
-
-@MainActor
-protocol FingerprintServiceProtocol: Sendable {
-    func generateFingerprint(from audioData: Data, sampleRate: Int, duration: Double) async throws -> String
-    func hashFingerprint(_ fingerprint: String) -> String
-}
-
-@MainActor
-protocol RecognitionServiceProtocol: Sendable {
-    func identifyCurrentAudio() async throws -> IdentificationResult?
-}
-
-@MainActor
-protocol CooldownManagerProtocol: Sendable {
-    func shouldSkip(fingerprintHash: String, trackKey: String) -> Bool
-    func registerDetection(fingerprintHash: String, trackKey: String)
-    func isInGlobalCooldown() -> Bool
-    func remainingCooldown() -> TimeInterval
-}
-
-// MARK: - UIStateManager
-
 @MainActor
 @Observable
 final class UIStateManager {
@@ -110,14 +77,12 @@ final class UIStateManager {
                 isListening = true
                 appState = .listening
                 log("Audio service started successfully")
-
                 startAudioLevelPolling()
-
                 if settings.autoDetectionEnabled {
                     startAutoDetectionTimer()
                 }
             } catch {
-                let message = "Failed to start audio service: \(error.localizedDescription)"
+                let message = "Failed to start audio: \(error.localizedDescription)"
                 appState = .error(message)
                 log(message, isError: true)
             }
@@ -126,16 +91,12 @@ final class UIStateManager {
 
     func stopListening() {
         log("Stopping listening...")
-
         autoDetectionTask?.cancel()
         autoDetectionTask = nil
-
         cooldownTimerTask?.cancel()
         cooldownTimerTask = nil
-
         audioLevelPollingTask?.cancel()
         audioLevelPollingTask = nil
-
         audioService.stop()
         isListening = false
         audioLevel = 0.0
@@ -143,7 +104,6 @@ final class UIStateManager {
         secondsUntilNextDetection = 0.0
         cooldownRemaining = 0.0
         appState = .idle
-
         log("Listening stopped")
     }
 
@@ -152,159 +112,131 @@ final class UIStateManager {
             log("Cannot identify: not listening")
             return
         }
-
         if case .processing = appState {
             log("Already processing, ignoring manual identify")
             return
         }
-
         log("Manual identification triggered")
-        Task {
-            await performIdentification()
+        Task { await performIdentification() }
+    }
+
+    // MARK: - Identification Pipeline
+
+    func performIdentification() async {
+        guard isListening else { return }
+        appState = .processing
+
+        do {
+            let result = try await runIdentificationPipeline()
+            await handleIdentificationSuccess(result)
+        } catch is CancellationError {
+            log("Identification cancelled")
+            if isListening { appState = .listening }
+        } catch {
+            await handleIdentificationError(error)
         }
     }
 
-    // MARK: - Identification
-
-    func performIdentification() async {
-        guard isListening else {
-            log("Cannot perform identification: not listening")
-            return
+    private func runIdentificationPipeline() async throws -> IdentificationResult? {
+        let bufferData = audioService.getBufferData()
+        guard !bufferData.isEmpty else {
+            log("Audio buffer is empty, skipping")
+            appState = .listening
+            return nil
         }
 
-        appState = .processing
-        log("Starting identification...")
+        let fingerprint = try await fingerprintService.generateFingerprint(
+            from: bufferData,
+            sampleRate: Int(settings.sampleRate),
+            duration: settings.audioBufferLength
+        )
+        let hash = fingerprintService.hashFingerprint(fingerprint)
+        log("Fingerprint generated, hash: \(hash.prefix(16))...")
 
-        do {
-            let bufferData = audioService.getBufferData()
-
-            guard !bufferData.isEmpty else {
-                log("Audio buffer is empty, skipping identification")
-                appState = .listening
-                return
-            }
-
-            let fingerprint = try await fingerprintService.generateFingerprint(
-                from: bufferData,
-                sampleRate: Int(settings.sampleRate),
-                duration: settings.audioBufferLength
-            )
-            let fingerprintHash = fingerprintService.hashFingerprint(fingerprint)
-            log("Fingerprint generated, hash: \(fingerprintHash.prefix(16))...")
-
-            // Check cooldown before making network request
-            if cooldownManager.isInGlobalCooldown() {
-                let remaining = cooldownManager.remainingCooldown()
-                log("Global cooldown active, \(Int(remaining))s remaining")
-                appState = .coolingDown(remaining)
-                startCooldownTimer()
-                return
-            }
-
-            guard let result = try await recognitionService.identifyCurrentAudio() else {
-                log("No match found")
-                appState = .listening
-                return
-            }
-
-            // Check confidence threshold
-            guard result.confidence >= settings.confidenceThreshold else {
-                log("Result below confidence threshold: \(result.confidence) < \(settings.confidenceThreshold)")
-                appState = .listening
-                return
-            }
-
-            let trackKey = "\(result.artist)-\(result.trackTitle)"
-
-            // Check per-track cooldown
-            if cooldownManager.shouldSkip(fingerprintHash: fingerprintHash, trackKey: trackKey) {
-                log("Track '\(result.trackTitle)' skipped due to cooldown")
-                appState = .listening
-                return
-            }
-
-            // Success - register and update state
-            cooldownManager.registerDetection(fingerprintHash: fingerprintHash, trackKey: trackKey)
-            currentResult = result
-            lastDetectionTime = Date()
-            trackHistory.add(result)
-            appState = .identified(result)
-            log("Identified: \(result.trackTitle) by \(result.artist) (confidence: \(String(format: "%.1f%%", result.confidence * 100)))")
-
-            // Transition to cooldown after identification
-            let cooldownDuration = settings.cooldownDuration
-            if cooldownDuration > 0 {
-                try? await Task.sleep(for: .seconds(3))
-                guard isListening else { return }
-                appState = .coolingDown(cooldownDuration)
-                startCooldownTimer()
-            } else {
-                try? await Task.sleep(for: .seconds(3))
-                guard isListening else { return }
-                appState = .listening
-            }
-
-        } catch is CancellationError {
-            log("Identification cancelled")
-            if isListening {
-                appState = .listening
-            }
-        } catch {
-            let message = "Identification failed: \(error.localizedDescription)"
-            log(message, isError: true)
-            appState = .error(message)
-
-            // Recover back to listening after a delay
-            try? await Task.sleep(for: .seconds(3))
-            if isListening {
-                appState = .listening
-            }
+        if cooldownManager.isInGlobalCooldown() {
+            let remaining = cooldownManager.remainingCooldown()
+            log("Global cooldown active, \(Int(remaining))s remaining")
+            appState = .coolingDown(remaining)
+            startCooldownTimer()
+            return nil
         }
+
+        guard let result = try await recognitionService.identifyCurrentAudio() else {
+            log("No match found")
+            appState = .listening
+            return nil
+        }
+
+        guard result.confidence >= settings.confidenceThreshold else {
+            log("Below threshold: \(result.confidence) < \(settings.confidenceThreshold)")
+            appState = .listening
+            return nil
+        }
+
+        let trackKey = "\(result.artist)-\(result.trackTitle)"
+        if cooldownManager.shouldSkip(fingerprintHash: hash, trackKey: trackKey) {
+            log("Track '\(result.trackTitle)' skipped (cooldown)")
+            appState = .listening
+            return nil
+        }
+
+        cooldownManager.registerDetection(fingerprintHash: hash, trackKey: trackKey)
+        return result
+    }
+
+    private func handleIdentificationSuccess(_ result: IdentificationResult?) async {
+        guard let result else { return }
+        currentResult = result
+        lastDetectionTime = Date()
+        trackHistory.add(result)
+        appState = .identified(result)
+        let pct = String(format: "%.1f%%", result.confidence * 100)
+        log("Identified: \(result.trackTitle) by \(result.artist) (\(pct))")
+        await transitionAfterIdentification()
+    }
+
+    private func transitionAfterIdentification() async {
+        let duration = settings.cooldownDuration
+        try? await Task.sleep(for: .seconds(3))
+        guard isListening else { return }
+        if duration > 0 {
+            appState = .coolingDown(duration)
+            startCooldownTimer()
+        } else {
+            appState = .listening
+        }
+    }
+
+    private func handleIdentificationError(_ error: Error) async {
+        let message = "Identification failed: \(error.localizedDescription)"
+        log(message, isError: true)
+        appState = .error(message)
+        try? await Task.sleep(for: .seconds(3))
+        if isListening { appState = .listening }
     }
 
     // MARK: - Auto Detection Timer
 
     func startAutoDetectionTimer() {
         autoDetectionTask?.cancel()
-
         let interval = settings.detectionInterval
         secondsUntilNextDetection = interval
-        log("Auto-detection timer started with interval: \(Int(interval))s")
+        log("Auto-detection started: \(Int(interval))s interval")
 
         autoDetectionTask = Task { [weak self] in
             guard let self else { return }
-
             while !Task.isCancelled {
-                // Count down every second
                 var remaining = interval
                 while remaining > 0, !Task.isCancelled {
-                    do {
-                        try await Task.sleep(for: .seconds(1))
-                    } catch {
-                        return
-                    }
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
                     remaining -= 1
-                    await MainActor.run {
-                        self.secondsUntilNextDetection = remaining
-                    }
+                    self.secondsUntilNextDetection = remaining
                 }
-
                 guard !Task.isCancelled else { return }
-
-                // Only trigger if we're in a listening state (not processing, cooling down, etc.)
-                let currentState = await MainActor.run { self.appState }
-                if case .listening = currentState {
+                if case .listening = self.appState {
                     await self.performIdentification()
-                } else {
-                    await MainActor.run {
-                        self.log("Auto-detection skipped, current state: \(currentState.displayText)")
-                    }
                 }
-
-                // Reset countdown for next cycle
-                await MainActor.run {
-                    self.secondsUntilNextDetection = interval
-                }
+                self.secondsUntilNextDetection = interval
             }
         }
     }
@@ -313,40 +245,24 @@ final class UIStateManager {
 
     private func startCooldownTimer() {
         cooldownTimerTask?.cancel()
-
         cooldownRemaining = cooldownManager.remainingCooldown()
-        log("Cooldown timer started: \(Int(cooldownRemaining))s")
 
         cooldownTimerTask = Task { [weak self] in
             guard let self else { return }
-
             while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    return
-                }
-
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
                 guard !Task.isCancelled else { return }
-
                 let remaining = self.cooldownManager.remainingCooldown()
-                await MainActor.run {
-                    self.cooldownRemaining = remaining
-
-                    if remaining <= 0 {
-                        self.cooldownRemaining = 0
-                        if self.isListening {
-                            self.appState = .listening
-                            self.log("Cooldown ended, resuming listening")
-                        }
-                    } else {
-                        self.appState = .coolingDown(remaining)
-                    }
-                }
-
+                self.cooldownRemaining = remaining
                 if remaining <= 0 {
+                    self.cooldownRemaining = 0
+                    if self.isListening {
+                        self.appState = .listening
+                        self.log("Cooldown ended")
+                    }
                     return
                 }
+                self.appState = .coolingDown(remaining)
             }
         }
     }
@@ -355,26 +271,13 @@ final class UIStateManager {
 
     private func startAudioLevelPolling() {
         audioLevelPollingTask?.cancel()
-
         audioLevelPollingTask = Task { [weak self] in
             guard let self else { return }
-
             while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .milliseconds(100))
-                } catch {
-                    return
-                }
-
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
                 guard !Task.isCancelled else { return }
-
-                let level = self.audioService.currentLevel
-                let fill = self.audioService.bufferFillPercentage
-
-                await MainActor.run {
-                    self.audioLevel = level
-                    self.bufferFillPercentage = fill
-                }
+                self.audioLevel = self.audioService.currentLevel
+                self.bufferFillPercentage = self.audioService.bufferFillPercentage
             }
         }
     }
@@ -382,8 +285,8 @@ final class UIStateManager {
     // MARK: - Window Management
 
     func openNowPlayingWindow() {
-        if let existingWindow = nowPlayingWindow {
-            existingWindow.makeKeyAndOrderFront(nil)
+        if let existing = nowPlayingWindow {
+            existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -401,45 +304,32 @@ final class UIStateManager {
         window.center()
         window.isReleasedWhenClosed = false
 
-        let nowPlayingContentView = NowPlayingFullView()
+        let content = NowPlayingFullView()
             .environment(self)
             .environment(trackHistory)
-        let hostingView = NSHostingView(rootView: nowPlayingContentView)
-        window.contentView = hostingView
+        window.contentView = NSHostingView(rootView: content)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-
         nowPlayingWindow = window
-        log("Now Playing window opened")
-    }
-
-    func openSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        NSApp.activate(ignoringOtherApps: true)
-        log("Settings window opened")
     }
 
     // MARK: - Debug Logging
 
-    private func log(_ message: String, isError: Bool = false) {
+    func log(_ message: String, isError: Bool = false) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
-        let entry = "[\(timestamp)] \(message)"
-        debugLogEntries.append(entry)
-
-        // Keep a reasonable number of entries
+        debugLogEntries.append("[\(timestamp)] \(message)")
         if debugLogEntries.count > 500 {
             debugLogEntries.removeFirst(debugLogEntries.count - 500)
         }
-
         if isError {
-            AppLogger.shared.error(message, category: .ui)
+            AppLogger.shared.error(message, category: .userInterface)
         } else {
-            AppLogger.shared.log(message, category: .ui)
+            AppLogger.shared.log(message, category: .userInterface)
         }
     }
 }
 
-// MARK: - NowPlayingFullView (wrapper for window)
+// MARK: - NowPlayingFullView
 
 struct NowPlayingFullView: View {
     @Environment(UIStateManager.self) private var stateManager
