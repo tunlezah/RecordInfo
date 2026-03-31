@@ -50,9 +50,11 @@ final class AppSettings {
         if defaults.object(forKey: "perTrackCooldown") != nil {
             perTrackCooldown = defaults.double(forKey: "perTrackCooldown")
         }
-        autoDetectionEnabled = defaults.object(forKey: "autoDetectionEnabled") != nil ? defaults.bool(forKey: "autoDetectionEnabled") : true
+        let hasAutoDetection = defaults.object(forKey: "autoDetectionEnabled") != nil
+        autoDetectionEnabled = hasAutoDetection ? defaults.bool(forKey: "autoDetectionEnabled") : true
         gapDetectionEnabled = defaults.bool(forKey: "gapDetectionEnabled")
-        fallbackProviderEnabled = defaults.object(forKey: "fallbackProviderEnabled") != nil ? defaults.bool(forKey: "fallbackProviderEnabled") : true
+        let hasFallback = defaults.object(forKey: "fallbackProviderEnabled") != nil
+        fallbackProviderEnabled = hasFallback ? defaults.bool(forKey: "fallbackProviderEnabled") : true
         debugModeEnabled = defaults.bool(forKey: "debugModeEnabled")
         if let key = defaults.string(forKey: "acoustIDApiKey") {
             acoustIDApiKey = key

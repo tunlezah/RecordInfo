@@ -54,7 +54,7 @@ private struct HistoryRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            AlbumArtView(artworkURL: track.artworkURL, size: Constants.UI.historyThumbnailSize)
+            AlbumArtView(artworkURL: track.artworkURL, size: Constants.UserInterface.historyThumbnailSize)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(track.trackTitle)

@@ -101,7 +101,7 @@ final class RecognitionService: RecognitionServiceProtocol {
         }
 
         // 4. Check confidence and try fallback if needed
-        if let r = result, r.confidence < settings.confidenceThreshold {
+        if let current = result, current.confidence < settings.confidenceThreshold {
             // Low confidence - try fallback if available
             result = nil
         }

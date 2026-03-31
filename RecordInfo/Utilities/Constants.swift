@@ -28,7 +28,7 @@ enum Constants {
         static let userAgent = "RecordInfo/1.0 (https://github.com/tunlezah/recordinfo)"
     }
 
-    enum UI {
+    enum UserInterface {
         static let mainWindowWidth: CGFloat = 420
         static let mainWindowHeight: CGFloat = 680
         static let albumArtSize: CGFloat = 280

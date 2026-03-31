@@ -25,12 +25,12 @@ enum AppState: Equatable {
         switch (lhs, rhs) {
         case (.idle, .idle), (.listening, .listening), (.processing, .processing):
             return true
-        case (.identified(let a), .identified(let b)):
-            return a == b
-        case (.coolingDown(let a), .coolingDown(let b)):
-            return a == b
-        case (.error(let a), .error(let b)):
-            return a == b
+        case (.identified(let lhsResult), .identified(let rhsResult)):
+            return lhsResult == rhsResult
+        case (.coolingDown(let lhsTime), .coolingDown(let rhsTime)):
+            return lhsTime == rhsTime
+        case (.error(let lhsMsg), .error(let rhsMsg)):
+            return lhsMsg == rhsMsg
         default:
             return false
         }

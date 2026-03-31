@@ -2,7 +2,7 @@ import SwiftUI
 
 struct AlbumArtView: View {
     let artworkURL: URL?
-    var size: CGFloat = Constants.UI.albumArtSize
+    var size: CGFloat = Constants.UserInterface.albumArtSize
 
     var body: some View {
         Group {

@@ -227,8 +227,8 @@ final class AudioService: AudioServiceProtocol {
         let count = Int(convertedBuffer.frameLength)
 
         var samples = [Float](repeating: 0, count: count)
-        for i in 0..<count {
-            samples[i] = channelData[i]
+        for idx in 0..<count {
+            samples[idx] = channelData[idx]
         }
 
         let rms = calculateRMS(samples)
