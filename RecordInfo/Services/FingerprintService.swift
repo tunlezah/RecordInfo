@@ -1,7 +1,8 @@
 import CryptoKit
 import Foundation
 
-final class FingerprintService: FingerprintServiceProtocol, Sendable {
+@MainActor
+final class FingerprintService: FingerprintServiceProtocol {
 
     // MARK: - Errors
 

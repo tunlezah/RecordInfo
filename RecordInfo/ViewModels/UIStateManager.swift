@@ -4,6 +4,7 @@ import AppKit
 
 // MARK: - Service Protocols
 
+@MainActor
 protocol AudioServiceProtocol: AnyObject, Sendable {
     func start() async throws
     func stop()
@@ -13,15 +14,18 @@ protocol AudioServiceProtocol: AnyObject, Sendable {
     var isRunning: Bool { get }
 }
 
+@MainActor
 protocol FingerprintServiceProtocol: Sendable {
     func generateFingerprint(from audioData: Data, sampleRate: Int, duration: Double) async throws -> String
     func hashFingerprint(_ fingerprint: String) -> String
 }
 
+@MainActor
 protocol RecognitionServiceProtocol: Sendable {
     func identifyCurrentAudio() async throws -> IdentificationResult?
 }
 
+@MainActor
 protocol CooldownManagerProtocol: Sendable {
     func shouldSkip(fingerprintHash: String, trackKey: String) -> Bool
     func registerDetection(fingerprintHash: String, trackKey: String)
@@ -149,19 +153,15 @@ final class UIStateManager {
             return
         }
 
-        guard case .processing = appState else {
-            if case .processing = appState {
-                log("Already processing, ignoring manual identify")
-                return
-            }
-            log("Manual identification triggered")
-            Task {
-                await performIdentification()
-            }
+        if case .processing = appState {
+            log("Already processing, ignoring manual identify")
             return
         }
 
-        log("Already processing, ignoring manual identify")
+        log("Manual identification triggered")
+        Task {
+            await performIdentification()
+        }
     }
 
     // MARK: - Identification
